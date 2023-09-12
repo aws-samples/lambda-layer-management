@@ -1,0 +1,1 @@
+rule desiredlayer { when configuration.layers !empty { some configuration.layers[*].arn != CONFIG_RULE_PARAMETERS.OldLayerArn } }

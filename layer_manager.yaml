@@ -1,0 +1,228 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  OldLayerArn:
+    Type: String
+    Description: The ARN of the old layer to be replaced
+    Default: arn:aws:lambda:us-east-1:218067593328:layer:CustomLayer:1
+  NewLayerArn:
+    Type: String
+    Description: The ARN of the new layer to replace the old one
+    Default: arn:aws:lambda:us-east-1:218067593328:layer:CustomLayer:1
+Resources:
+  RotateLambdaFunctionLayerSSMDoc:
+    Type: AWS::SSM::Document
+    Properties:
+      Content:
+        description: Automation to rotate Lambda function from old to new
+        schemaVersion: "0.3"
+        assumeRole: "{{AutomationAssumeRole}}"
+        parameters:
+          OldLayerArn:
+            type: String
+            description: Old LayerArn
+          NewLayerArn:
+            type: String
+            description: New LayerArn
+          LambdaFunctionArn:
+            type: String
+            description: Lambda Function Arn
+          AutomationAssumeRole:
+            type: String
+            description: Automation Assume Role
+        mainSteps:
+          - name: ChangingLambdaLayers
+            action: aws:executeScript
+            outputs:
+              - Name: Rotation Info Message
+                Selector: $.Payload.message
+                Type: String
+            inputs:
+              Runtime: python3.8
+              Handler: script_handler
+              Script: |-
+                import boto3
+
+                def script_handler(event, context):
+                    old_layer_arn = event.get("OldLayerArn")
+                    new_layer_arn = event.get("NewLayerArn")
+                    lambda_function_arn = event.get("LambdaFunctionArn")
+
+                    # Fetch layer ARNs of the function
+                    client = boto3.client("lambda")
+                    response = client.get_function(FunctionName=lambda_function_arn)
+                    current_layer_arns = []
+                    layerDetails = response["Configuration"]["Layers"]
+                    for layerDetail in layerDetails:
+                        current_layer_arns.append(layerDetail['Arn'])
+                    print(current_layer_arns)
+
+                    # Check if the old layer ARN exists in the function's layers
+                    if old_layer_arn in current_layer_arns:
+                        # Replace the old layer ARN with the new layer ARN
+                        current_layer_arns.remove(old_layer_arn)
+                        current_layer_arns.append(new_layer_arn)
+
+                        # Update the function with the new layer ARN
+                        response = client.update_function_configuration(
+                            FunctionName=lambda_function_arn, Layers=current_layer_arns)
+                        return {
+                            "message":
+                            f"Successfully updated layer ARN of function {lambda_function_arn}."
+                        }
+                    else:
+                        return {
+                            "message":
+                            f"Old layer ARN {old_layer_arn} not found in function {lambda_function_arn}."
+                        }
+              InputPayload:
+                OldLayerArn: "{{OldLayerArn}}"
+                NewLayerArn: "{{NewLayerArn}}"
+                LambdaFunctionArn: "{{LambdaFunctionArn}}"
+            description: Rotate Lambda Layers
+      DocumentType: Automation
+      Name: LayerRotationSSMDoc
+  ConfigRule:
+    Type: AWS::Config::ConfigRule
+    Properties:
+      ConfigRuleName:
+        Fn::Join:
+          - ""
+          - - ConfigRuleForOldLambdas-
+            - Ref: AWS::StackName
+      Description: Custom policy rule to enforce compliance
+      InputParameters:
+        OldLayerArn: !Ref OldLayerArn
+        NewLayerArn: !Ref NewLayerArn
+      Scope:
+        ComplianceResourceTypes:
+          - AWS::Lambda::Function
+      Source:
+        CustomPolicyDetails:
+          EnableDebugLogDelivery: false
+          PolicyRuntime: guard-2.x.x
+          PolicyText: rule desiredlayer { when configuration.layers !empty { some configuration.layers[*].arn != CONFIG_RULE_PARAMETERS.OldLayerArn } }
+        Owner: CUSTOM_POLICY
+        SourceDetails:
+          - EventSource: aws.config
+            MessageType: ConfigurationItemChangeNotification
+        SourceIdentifier: PLR_CUSTOM_POLICY
+  SSMRole4E0C2080:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: ssm.amazonaws.com
+        Version: "2012-10-17"
+      Policies:
+        - PolicyDocument:
+            Statement:
+              - Action:
+                  - ssm:DescribeAutomationExecutions
+                  - ssm:StartAutomationExecution
+                  - ssm:StopAutomationExecution
+                Effect: Allow
+                Resource:
+                  Fn::Sub: arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/LayerRotationSSMDoc
+              - Action:
+                  - lambda:GetFunction
+                  - lambda:GetLayerVersion
+                  - lambda:ListLayers
+                  - lambda:UpdateFunctionConfiguration
+                Effect: Allow
+                Resource: "*"
+            Version: "2012-10-17"
+          PolicyName: SSMDocumentExecution
+  ConfigRuleEvaluatorRole7051FB19:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+        Version: "2012-10-17"
+      Policies:
+        - PolicyDocument:
+            Statement:
+              - Action: config:startConfigRulesEvaluation
+                Effect: Allow
+                Resource:
+                  Fn::Join:
+                    - ""
+                    - - "arn:aws:config:"
+                      - Ref: AWS::Region
+                      - ":"
+                      - Ref: AWS::AccountId
+                      - :config-rule/config-rule-ConfigRuleForOldLambdas-
+                      - Ref: AWS::StackName
+            Version: "2012-10-17"
+          PolicyName: ConfigRuleEvaluatorPolicy
+  ConfigRemediation:
+    Type: AWS::Config::RemediationConfiguration
+    Properties:
+      Automatic: true
+      ConfigRuleName:
+        Fn::Join:
+          - ""
+          - - ConfigRuleForOldLambdas-
+            - Ref: AWS::StackName
+      ExecutionControls:
+        SsmControls:
+          ConcurrentExecutionRatePercentage: 50
+          ErrorPercentage: 50
+      MaximumAutomaticAttempts: 5
+      Parameters:
+        AutomationAssumeRole:
+          StaticValue:
+            Values:
+              - Fn::GetAtt:
+                  - SSMRole4E0C2080
+                  - Arn
+        LambdaFunctionArn:
+          ResourceValue:
+            Value: RESOURCE_ID
+        OldLayerArn:
+          StaticValue:
+            Values:
+              - !Ref OldLayerArn
+        NewLayerArn:
+          StaticValue:
+            Values:
+              - !Ref NewLayerArn
+      RetryAttemptSeconds: 60
+      TargetId:
+        Ref: RotateLambdaFunctionLayerSSMDoc
+      TargetType: SSM_DOCUMENT
+      TargetVersion: "1"
+    DependsOn:
+      - ConfigRule
+  EvaluateConfigRuleOnSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Description: Start Config Enable
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      ScheduleExpression: rate(30 minute)
+      State: ENABLED
+      Target:
+        Arn: arn:aws:scheduler:::aws-sdk:config:startConfigRulesEvaluation
+        Input:
+          Fn::Join:
+            - ""
+            - - '{"ConfigRuleNames": ["ConfigRuleForOldLambdas-'
+              - Ref: AWS::StackName
+              - '"]}'
+        RetryPolicy:
+          MaximumEventAgeInSeconds: 600
+          MaximumRetryAttempts: 10
+        RoleArn:
+          Fn::GetAtt:
+            - ConfigRuleEvaluatorRole7051FB19
+            - Arn
+    DependsOn:
+      - ConfigRule
+
