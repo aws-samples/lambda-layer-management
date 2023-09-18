@@ -17,7 +17,7 @@ Follow the procedures below to create and deploy CloudFormation StackSets from y
     ```bash
     aws cloudformation create-stack-set \
     --stack-set-name layers-remediation-stackset \
-    --template-body file:///lambdalayer.yaml
+    --template-body file://lambda-layer-management/layer_manager.yaml
     ```
 
 3. Run the following CLI command to add stack instances in the desired accounts and regions to your CloudFormation StackSets. Replace the account IDs, regions, and parameters before you execute this command. You can refer to the syntax in the AWS CLI Command Reference. “NewLayerArn” is the ARN for your updated Lambda layer, while “OldLayerArn” is the original Lambda layer ARN.
@@ -27,7 +27,7 @@ Follow the procedures below to create and deploy CloudFormation StackSets from y
       --stack-set-name layers-remediation-stackset
       --accounts <LIST_OF_ACCOUNTS>
       --regions <YOUR_REGIONS>
-      --parameter-overrides ParameterKey=NewLayerArn,ParameterValue='<NEW_LAYER_ARN>' ParameterKey=OldLayerArn,ParameterValue='=<NEW_LAYER_ARN>'
+      --parameter-overrides ParameterKey=NewLayerArn,ParameterValue='<NEW_LAYER_ARN>' ParameterKey=OldLayerArn,ParameterValue='=<OLD_LAYER_ARN>'
     ```
 
 4. Run the following CLI command to verify that the stack instances were created successfully. The operation ID should be returned as part of the output from step 3.
@@ -39,3 +39,8 @@ Follow the procedures below to create and deploy CloudFormation StackSets from y
     ```
 
 This CloudFormation Stackset will deploy an EventBridge Scheduler that immediately triggers the AWS Config custom rule for evaluation. This rule, written in AWS CloudFormation Guard, will detect all the Lambda functions in the respective member accounts currently using the outdated Lambda layer version. By leveraging the Auto Remediation feature of AWS Config, SSM automation document will be executed against each non-compliant Lambda function to update them with the new layer version.
+
+## Cleaning up
+Refer to the documentation for instructions on [deleting all the created stack instances](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/stackinstances-delete.html) from your account. After, proceed to [delete the CloudFormation StackSet](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/stacksets-delete.html).
+
+
